@@ -126,7 +126,7 @@ jobs:
         run: |
           docker run -d \
             --name test-container \
-            -p 8000:8000 \
+            -p 8080:8000 \
             muathaf/gitops-microservice:latest
           sleep 5
           curl --fail http://localhost:8000/
