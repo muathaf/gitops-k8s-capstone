@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════════
+# .github/workflows/ci.yaml — GitOps Capstone CI Pipeline
+# Author  : Muathaf
+# Purpose : Automatically validate every push to main by:
+#             1. Checking out the code
+#             2. Setting up Python and installing dependencies
+#             3. Building the Docker image to verify it compiles
+#
+# This ensures broken code is caught before it ever reaches
+# a staging or production Kubernetes cluster.
+# ═══════════════════════════════════════════════════════════════
+
+name: CI — Build and Validate
+
+
+# ─────────────────────────────────────────
+# TRIGGER
+# ─────────────────────────────────────────
+
+# This pipeline runs automatically on every push to main.
+# Also runs on pull requests targeting main — so code is
+# validated before it is even merged.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+
+# ─────────────────────────────────────────
+# JOBS
+# ─────────────────────────────────────────
+
+jobs:
+
+  build-and-validate:
+
+    # GitHub spins up a fresh Ubuntu virtual machine for each run.
+    # This guarantees a clean, reproducible environment every time.
+    runs-on: ubuntu-latest
+
+    # Job-level name shown in the GitHub Actions UI
+    name: Python Lint + Docker Build
+
+
+    # ───────────────────────────────────────
+    # STEPS — run in order, top to bottom.
+    # If any step fails, the job stops and
+    # GitHub marks the run as failed (red x).
+    # ───────────────────────────────────────
+
+    steps:
+
+      # Step 1: Checkout Code
+      # Downloads your repository code onto the runner VM.
+      # Without this, no other step can access your files.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # Step 2: Set Up Python
+      # Installs the specified Python version on the runner.
+      # Using 3.13 to match the version in your Dockerfile.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+
+      # Step 3: Cache Dependencies
+      # Caches the pip package downloads between runs.
+      # If requirements.txt hasn't changed, packages are restored
+      # from cache instead of re-downloaded — saves ~30 seconds.
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+
+      # Step 4: Install Dependencies
+      # Installs all Python packages listed in requirements.txt.
+      # This step validates that requirements.txt is correct and
+      # all packages are installable.
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+
+      # Step 5: Verify App Starts
+      # Starts the FastAPI app for 3 seconds and hits /health.
+      # Catches import errors, missing modules, or syntax bugs
+      # before we even attempt a Docker build.
+      - name: Verify FastAPI app starts correctly
+        run: |
+          uvicorn main:app --host 0.0.0.0 --port 8000 &
+          sleep 3
+          curl --fail http://localhost:8000/health
+          echo "App health check passed"
+
+
+      # Step 6: Build Docker Image
+      # Builds the Docker image using your Dockerfile.
+      # This verifies the Dockerfile syntax is valid, all COPY
+      # and RUN commands succeed, and the image is producible.
+      # Tagged with the short Git commit SHA for traceability.
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t muathaf/gitops-microservice:${{ github.sha }} \
+            -t muathaf/gitops-microservice:latest \
+            .
+          echo "Docker image built successfully"
+
+
+      # Step 7: Smoke Test the Container
+      # Runs the built container and hits /health one more time.
+      # Confirms the app works correctly INSIDE Docker — not just
+      # on bare Python. Catches files missing from the Dockerfile.
+      - name: Smoke test the Docker container
+        run: |
+          docker run -d \
+            --name test-container \
+            -p 8000:8000 \
+            muathaf/gitops-microservice:latest
+          sleep 5
+          curl --fail http://localhost:8000/
+          curl --fail http://localhost:8000/health
+          echo "Container smoke test passed"
+          docker stop test-container
+          docker rm test-container
+
+
+      # Step 8: Print Image Info
+      # Lists the built Docker images so the size is visible
+      # in the Actions log. Useful for tracking image bloat.
+      - name: Print Docker image info
+        run: docker images muathaf/gitops-microservice
