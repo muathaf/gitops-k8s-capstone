@@ -1,0 +1,151 @@
+# ─────────────────────────────────────────────────────────────────
+# deployment.yaml — GitOps Capstone Microservice
+# Author  : Muathaf
+# Purpose : Deploy the containerized FastAPI microservice to
+#           Kubernetes with 2 replicas and expose it via a
+#           LoadBalancer Service on port 80.
+#
+# Apply with:
+#   kubectl apply -f deployment.yaml
+#
+# Check status with:
+#   kubectl get deployments
+#   kubectl get pods
+#   kubectl get services
+# ─────────────────────────────────────────────────────────────────
+
+
+# ═══════════════════════════════════════
+# PART 1: DEPLOYMENT
+# Manages the desired state of the app —
+# how many replicas to run, which image to use,
+# and how to perform rolling updates.
+# ═══════════════════════════════════════
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  # Unique name for this Deployment inside the cluster
+  name: gitops-microservice
+
+  # Labels help organise and select resources in Kubernetes
+  labels:
+    app: gitops-microservice
+
+spec:
+
+  # Run 2 identical Pods at all times.
+  # If one Pod crashes, Kubernetes automatically replaces it.
+  # 2 replicas also allows zero-downtime rolling updates.
+  replicas: 2
+
+  # Tells Kubernetes which Pods this Deployment manages.
+  # Must match the labels defined in template.metadata.labels below.
+  selector:
+    matchLabels:
+      app: gitops-microservice
+
+  # Rolling update strategy:
+  # - maxSurge: allow 1 extra Pod during an update (no downtime)
+  # - maxUnavailable: never take more than 1 Pod offline at once
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  # Pod template — defines what each replica looks like
+  template:
+
+    metadata:
+      labels:
+        app: gitops-microservice  # must match selector.matchLabels
+
+    spec:
+      containers:
+        - name: gitops-microservice
+
+          # Replace with your actual Docker Hub image after pushing:
+          # docker build -t muathaf/gitops-microservice:1.0.0 .
+          # docker push muathaf/gitops-microservice:1.0.0
+          image: muathaf/gitops-microservice:1.0.0
+
+          # Always pull the latest version of the tag from the registry.
+          # Use IfNotPresent in production if tags are immutable.
+          imagePullPolicy: Always
+
+          # The port your FastAPI app listens on inside the container
+          ports:
+            - containerPort: 8000
+
+          # ── Liveness Probe ──────────────────────────────────────
+          # Kubernetes hits /health every 10 seconds.
+          # If it fails 3 times in a row, the Pod is restarted.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10   # wait 10s before first check
+            periodSeconds: 10         # check every 10s
+            failureThreshold: 3       # restart after 3 consecutive failures
+
+          # ── Readiness Probe ─────────────────────────────────────
+          # Kubernetes waits until /health returns 200 before sending
+          # traffic to this Pod. Prevents routing to a Pod that
+          # hasn't finished starting up.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          # ── Resource Limits ─────────────────────────────────────
+          # Prevents a single Pod from consuming too many cluster resources.
+          # Requests: guaranteed minimum allocation.
+          # Limits: hard maximum the container cannot exceed.
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"       # 100 millicores = 0.1 CPU core
+            limits:
+              memory: "128Mi"
+              cpu: "250m"       # 250 millicores = 0.25 CPU core
+
+
+---   # Three dashes separate multiple Kubernetes resources in one file
+
+
+# ═══════════════════════════════════════
+# PART 2: SERVICE
+# Exposes the Deployment to network traffic.
+# LoadBalancer type provisions a cloud load balancer
+# (AWS ELB, GCP LB, Azure LB) automatically.
+# ═══════════════════════════════════════
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: gitops-microservice-service
+  labels:
+    app: gitops-microservice
+
+spec:
+
+  # LoadBalancer: tells the cloud provider to provision an
+  # external load balancer with a public IP address.
+  # Use NodePort for local/minikube testing instead.
+  type: LoadBalancer
+
+  # Route traffic to Pods that have this label.
+  # Must match the Pod labels in the Deployment above.
+  selector:
+    app: gitops-microservice
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80          # External port — what users/clients connect to
+      targetPort: 8000  # Internal port — where the FastAPI app listens
